@@ -375,14 +375,26 @@
     <button class="enable-btn" id="enableBtn">Aktifkan Audio</button>
   </div>
 
-  <audio id="audioEl" preload="auto" playsinline></audio>
+  <!-- Player YouTube resmi (IFrame Player API), disembunyikan secara visual
+       tapi tetap "hidup" (bukan display:none) supaya browser gak nge-pause-in
+       audionya pas di-minimize. Ini pengganti ekstraksi stream mentah — semua
+       audio jalan lewat player resmi YouTube. -->
+  <div style="position:fixed;width:2px;height:2px;overflow:hidden;opacity:0.01;pointer-events:none;left:-9999px;top:-9999px;">
+    <div id="ytPlayer"></div>
+  </div>
 
+  <script src="https://www.youtube.com/iframe_api"></script>
   <script>
     // ---------- state ----------
     let audioEnabled = false
     let isPlaying = false
     let wakeLock = null
     let currentTrackData = null
+
+    let ytPlayer = null
+    let ytReady = false
+    let pendingVideoId = null
+    let userUnlocked = false
 
     const el = {
       overlay: document.getElementById('enableOverlay'),
@@ -399,10 +411,7 @@
       playBtn: document.getElementById('playBtn'),
       playIcon: document.getElementById('playIcon'),
       volSlider: document.getElementById('volSlider'),
-      audio: document.getElementById('audioEl'),
     }
-
-    el.audio.volume = Number(el.volSlider.value) / 100
 
     const ICON_PLAY = '<path d="M8 5v14l11-7z"/>'
     const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>'
@@ -434,25 +443,55 @@
       setPlayingUI(false)
     }
 
-    // ---------- audio playback (pakai <audio> tag asli, bukan iframe YouTube) ----------
-    // Ini kuncinya biar bisa jalan di background/layar mati: browser mobile jauh
-    // lebih toleran nahan <audio> tetap hidup dibanding iframe video YouTube,
-    // apalagi kalau dipasangin Media Session API di bawah.
-    function playVideo(videoId){
-      el.audio.src = `/api/stream/${videoId}`
-      el.audio.play().catch(err => {
-        console.warn('[playonweb] play() ditolak browser:', err.message)
+    // ---------- YouTube IFrame Player API ----------
+    // Pakai player resmi YouTube (bukan ekstraksi stream mentah). Ukurannya
+    // dibikin kecil & disembunyikan visual, tapi elemennya tetap ada di DOM
+    // (bukan display:none) supaya audionya tetap jalan pas tab di-minimize,
+    // dikombinasi Media Session + Wake Lock di bawah buat kontrol lock-screen
+    // dan nahan layar nggak tidur.
+    window.onYouTubeIframeAPIReady = function () {
+      ytPlayer = new YT.Player('ytPlayer', {
+        height: '2',
+        width: '2',
+        playerVars: {
+          autoplay: 0,
+          controls: 0,
+          disablekb: 1,
+          playsinline: 1,
+          modestbranding: 1,
+          rel: 0
+        },
+        events: {
+          onReady: () => {
+            ytReady = true
+            ytPlayer.setVolume(Number(el.volSlider.value))
+            if (pendingVideoId) { playVideo(pendingVideoId); pendingVideoId = null }
+          },
+          onStateChange: onPlayerStateChange
+        }
       })
+    }
+
+    function onPlayerStateChange(e){
+      if (e.data === YT.PlayerState.PLAYING) { setPlayingUI(true); requestWakeLock() }
+      else if (e.data === YT.PlayerState.PAUSED) setPlayingUI(false)
+      else if (e.data === YT.PlayerState.ENDED) { setPlayingUI(false); releaseWakeLock() }
+      else if (e.data === YT.PlayerState.BUFFERING) el.lcdStatus.textContent = 'BUFFERING'
+    }
+
+    function playVideo(videoId){
+      if (!ytReady) { pendingVideoId = videoId; return }
+      ytPlayer.loadVideoById(videoId)
+      ytPlayer.setVolume(Number(el.volSlider.value))
       requestWakeLock()
     }
 
-    el.audio.addEventListener('playing', () => setPlayingUI(true))
-    el.audio.addEventListener('pause', () => setPlayingUI(false))
-    el.audio.addEventListener('ended', () => { setPlayingUI(false); releaseWakeLock() })
-    el.audio.addEventListener('waiting', () => { el.lcdStatus.textContent = 'BUFFERING' })
-    el.audio.addEventListener('canplay', () => {
-      if (isPlaying) el.lcdStatus.textContent = 'MEMUTAR'
-    })
+    function stopVideo(){
+      if (ytReady) ytPlayer.stopVideo()
+      releaseWakeLock()
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none'
+      setIdle()
+    }
 
     // ---------- media session api ----------
     // Ngasih tau OS/browser kalau ini "sesi media" beneran (bukan cuma tab
@@ -469,12 +508,9 @@
         ] : []
       })
       navigator.mediaSession.playbackState = 'playing'
-      navigator.mediaSession.setActionHandler('play', () => el.audio.play())
-      navigator.mediaSession.setActionHandler('pause', () => el.audio.pause())
-      navigator.mediaSession.setActionHandler('stop', () => {
-        el.audio.pause()
-        el.audio.currentTime = 0
-      })
+      navigator.mediaSession.setActionHandler('play', () => ytReady && ytPlayer.playVideo())
+      navigator.mediaSession.setActionHandler('pause', () => ytReady && ytPlayer.pauseVideo())
+      navigator.mediaSession.setActionHandler('stop', () => stopVideo())
     }
 
     // ---------- wake lock ----------
@@ -498,27 +534,41 @@
     })
 
     // ---------- enable audio gate ----------
+    // Browser butuh 1 user-gesture buat ngizinin autoplay bersuara nanti.
+    // Kita "pinjam" video publik resmi YouTube yg pendek buat unlock, langsung
+    // di-mute+pause lagi — bukan lagu yg diminta user.
+    const UNLOCK_VIDEO_ID = 'jNQXAC9IVRw' // video publik resmi pertama di YouTube, cuma buat trigger unlock
     el.enableBtn.addEventListener('click', () => {
       audioEnabled = true
+      userUnlocked = true
       el.overlay.style.display = 'none'
-      // trik unlock: play+pause sekali biar browser catat ini "user gesture"
-      // dan mengizinkan audio nyala otomatis nanti tanpa interaksi lagi.
-      el.audio.volume = Number(el.volSlider.value) / 100
-      el.audio.muted = true
-      el.audio.play().then(() => {
-        el.audio.pause()
-        el.audio.muted = false
-      }).catch(() => { el.audio.muted = false })
+      const doUnlock = () => {
+        ytPlayer.mute()
+        ytPlayer.loadVideoById(UNLOCK_VIDEO_ID)
+        setTimeout(() => {
+          ytPlayer.stopVideo()
+          ytPlayer.unMute()
+          ytPlayer.setVolume(Number(el.volSlider.value))
+        }, 400)
+      }
+      if (ytReady) doUnlock()
+      else {
+        const prevReady = window.onYouTubeIframeAPIReady
+        // kalau player belum siap, tunggu lalu jalanin unlock sekali
+        const check = setInterval(() => {
+          if (ytReady) { clearInterval(check); doUnlock() }
+        }, 100)
+      }
     })
 
     // ---------- manual controls ----------
     el.playBtn.addEventListener('click', () => {
-      if (!el.audio.src) return
-      if (isPlaying) el.audio.pause()
-      else el.audio.play()
+      if (!ytReady || !currentTrackData) return
+      if (isPlaying) ytPlayer.pauseVideo()
+      else ytPlayer.playVideo()
     })
     el.volSlider.addEventListener('input', () => {
-      el.audio.volume = Number(el.volSlider.value) / 100
+      if (ytReady) ytPlayer.setVolume(Number(el.volSlider.value))
     })
 
     // ---------- websocket ----------
@@ -543,12 +593,7 @@
             setTrack(data)
             playVideo(data.videoId)
           } else if (data.type === 'stop'){
-            el.audio.pause()
-            el.audio.removeAttribute('src')
-            el.audio.load()
-            releaseWakeLock()
-            if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none'
-            setIdle()
+            stopVideo()
           }
         } catch {}
       }

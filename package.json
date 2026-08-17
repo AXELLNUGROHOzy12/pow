@@ -1,7 +1,7 @@
 {
   "name": "playonweb-server",
   "version": "1.0.0",
-  "description": "Mini server: WA bot ngirim command '.playonweb <judul>', web player yang lagi kebuka langsung muter lagunya.",
+  "description": "Mini server: WA bot ngirim command '.playonweb <judul>', web player yang lagi kebuka langsung muter lagunya lewat YouTube IFrame Player API resmi.",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -11,7 +11,6 @@
     "express": "^4.19.2",
     "ws": "^8.18.0",
     "yt-search": "^2.13.1",
-    "cors": "^2.8.5",
-    "youtubei.js": "^13.3.0"
+    "cors": "^2.8.5"
   }
 }
