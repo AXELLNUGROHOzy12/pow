@@ -310,8 +310,6 @@
   }
   .enable-btn:active{ transform: scale(0.97); }
 
-  #yt-player{ position:fixed; width:1px; height:1px; opacity:0; pointer-events:none; bottom:0; right:0; }
-
   @media (prefers-reduced-motion: reduce){
     .record, .tonearm, .marquee-track, .link-dot.on{ animation: none !important; transition:none !important; }
   }
@@ -377,16 +375,14 @@
     <button class="enable-btn" id="enableBtn">Aktifkan Audio</button>
   </div>
 
-  <div id="yt-player"></div>
+  <audio id="audioEl" preload="auto" playsinline></audio>
 
-  <script src="https://www.youtube.com/iframe_api"></script>
   <script>
     // ---------- state ----------
-    let ytPlayer = null
-    let ytReady = false
     let audioEnabled = false
     let isPlaying = false
-    let pendingVideoId = null
+    let wakeLock = null
+    let currentTrackData = null
 
     const el = {
       overlay: document.getElementById('enableOverlay'),
@@ -403,7 +399,10 @@
       playBtn: document.getElementById('playBtn'),
       playIcon: document.getElementById('playIcon'),
       volSlider: document.getElementById('volSlider'),
+      audio: document.getElementById('audioEl'),
     }
+
+    el.audio.volume = Number(el.volSlider.value) / 100
 
     const ICON_PLAY = '<path d="M8 5v14l11-7z"/>'
     const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>'
@@ -414,12 +413,17 @@
       el.tonearm.classList.toggle('playing', playing)
       el.playIcon.innerHTML = playing ? ICON_PAUSE : ICON_PLAY
       el.lcdStatus.textContent = playing ? 'MEMUTAR' : 'JEDA'
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+      }
     }
 
     function setTrack(track){
+      currentTrackData = track
       el.title.textContent = track.title
       el.title.classList.toggle('scroll', track.title.length > 28)
       el.sub.textContent = `${track.channel} · ${track.duration || ''}`
+      updateMediaSession(track)
     }
 
     function setIdle(){
@@ -430,53 +434,91 @@
       setPlayingUI(false)
     }
 
-    // ---------- youtube iframe api ----------
-    window.onYouTubeIframeAPIReady = function(){
-      ytPlayer = new YT.Player('yt-player', {
-        height: '1', width: '1',
-        playerVars: { autoplay: 0, controls: 0, disablekb: 1, modestbranding: 1 },
-        events: {
-          onReady: () => {
-            ytReady = true
-            ytPlayer.setVolume(Number(el.volSlider.value))
-            if (pendingVideoId){
-              playVideo(pendingVideoId)
-              pendingVideoId = null
-            }
-          },
-          onStateChange: (e) => {
-            if (e.data === YT.PlayerState.PLAYING) setPlayingUI(true)
-            if (e.data === YT.PlayerState.PAUSED) setPlayingUI(false)
-            if (e.data === YT.PlayerState.ENDED) setPlayingUI(false)
-          }
-        }
+    // ---------- audio playback (pakai <audio> tag asli, bukan iframe YouTube) ----------
+    // Ini kuncinya biar bisa jalan di background/layar mati: browser mobile jauh
+    // lebih toleran nahan <audio> tetap hidup dibanding iframe video YouTube,
+    // apalagi kalau dipasangin Media Session API di bawah.
+    function playVideo(videoId){
+      el.audio.src = `/api/stream/${videoId}`
+      el.audio.play().catch(err => {
+        console.warn('[playonweb] play() ditolak browser:', err.message)
+      })
+      requestWakeLock()
+    }
+
+    el.audio.addEventListener('playing', () => setPlayingUI(true))
+    el.audio.addEventListener('pause', () => setPlayingUI(false))
+    el.audio.addEventListener('ended', () => { setPlayingUI(false); releaseWakeLock() })
+    el.audio.addEventListener('waiting', () => { el.lcdStatus.textContent = 'BUFFERING' })
+    el.audio.addEventListener('canplay', () => {
+      if (isPlaying) el.lcdStatus.textContent = 'MEMUTAR'
+    })
+
+    // ---------- media session api ----------
+    // Ngasih tau OS/browser kalau ini "sesi media" beneran (bukan cuma tab
+    // biasa) -> browser kasih kelonggaran biar gak di-suspend di background,
+    // dan HP dapat kontrol play/pause/next di lock screen & notification.
+    function updateMediaSession(track){
+      if (!('mediaSession' in navigator)) return
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title,
+        artist: track.channel,
+        album: 'playonweb',
+        artwork: track.thumbnail ? [
+          { src: track.thumbnail, sizes: '512x512', type: 'image/jpeg' }
+        ] : []
+      })
+      navigator.mediaSession.playbackState = 'playing'
+      navigator.mediaSession.setActionHandler('play', () => el.audio.play())
+      navigator.mediaSession.setActionHandler('pause', () => el.audio.pause())
+      navigator.mediaSession.setActionHandler('stop', () => {
+        el.audio.pause()
+        el.audio.currentTime = 0
       })
     }
 
-    function playVideo(videoId){
-      if (!ytReady){ pendingVideoId = videoId; return }
-      ytPlayer.loadVideoById(videoId)
-      ytPlayer.playVideo()
+    // ---------- wake lock ----------
+    // Cegah layar/HP tidur selagi lagu diputar (butuh HTTPS + tab aktif utk
+    // dapetin lock-nya; kalau tab di-minimize browser akan lepas otomatis,
+    // dan kita re-request begitu tab keliatan lagi).
+    async function requestWakeLock(){
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen')
+        }
+      } catch (err) {
+        console.warn('[playonweb] wake lock gagal:', err.message)
+      }
     }
+    function releaseWakeLock(){
+      if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null }
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && isPlaying) requestWakeLock()
+    })
 
     // ---------- enable audio gate ----------
     el.enableBtn.addEventListener('click', () => {
       audioEnabled = true
       el.overlay.style.display = 'none'
-      // trik: play+pause video kosong sekali biar browser catat ini "user gesture unlock"
-      if (ytReady){
-        ytPlayer.setVolume(Number(el.volSlider.value))
-      }
+      // trik unlock: play+pause sekali biar browser catat ini "user gesture"
+      // dan mengizinkan audio nyala otomatis nanti tanpa interaksi lagi.
+      el.audio.volume = Number(el.volSlider.value) / 100
+      el.audio.muted = true
+      el.audio.play().then(() => {
+        el.audio.pause()
+        el.audio.muted = false
+      }).catch(() => { el.audio.muted = false })
     })
 
     // ---------- manual controls ----------
     el.playBtn.addEventListener('click', () => {
-      if (!ytReady) return
-      if (isPlaying) ytPlayer.pauseVideo()
-      else ytPlayer.playVideo()
+      if (!el.audio.src) return
+      if (isPlaying) el.audio.pause()
+      else el.audio.play()
     })
     el.volSlider.addEventListener('input', () => {
-      if (ytReady) ytPlayer.setVolume(Number(el.volSlider.value))
+      el.audio.volume = Number(el.volSlider.value) / 100
     })
 
     // ---------- websocket ----------
@@ -501,7 +543,11 @@
             setTrack(data)
             playVideo(data.videoId)
           } else if (data.type === 'stop'){
-            if (ytReady) ytPlayer.stopVideo()
+            el.audio.pause()
+            el.audio.removeAttribute('src')
+            el.audio.load()
+            releaseWakeLock()
+            if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none'
             setIdle()
           }
         } catch {}

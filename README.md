@@ -1,8 +1,16 @@
 # playonweb
 
 Bot WA cuma jadi remote. Musiknya beneran keluar dari browser yang lagi
-kebuka halaman web player (YouTube IFrame API), bukan dikirim sebagai file
-audio ke WhatsApp.
+kebuka halaman web player, bukan dikirim sebagai file audio ke WhatsApp.
+
+Server yang nyari lagu di YouTube (`yt-search`) lalu ekstrak URL audio
+mentahnya (`yt-dlp`) dan di-proxy lewat endpoint sendiri ke tag `<audio>`
+biasa di browser — bukan iframe video YouTube. Ini penting: tag `<audio>`
+jauh lebih toleran dijalankan browser mobile pas tab di-minimize atau layar
+dikunci, apalagi dikombinasi Media Session API (bikin browser anggap ini
+sesi media beneran, dapat kontrol di lock screen, dan dikecualikan dari
+sebagian pembatasan background) + Wake Lock (nahan layar nggak tidur pas
+lagu jalan).
 
 ## Cara kerja
 
@@ -12,12 +20,24 @@ WA: .playonweb judul lagu
       ▼
 plugin-playonweb.js  ──HTTP GET──▶  server.js (music-server)
                                         │  search YouTube (yt-search)
-                                        │  broadcast lewat WebSocket
+                                        │  broadcast videoId lewat WebSocket
                                         ▼
-                                 semua browser yang lagi
-                                 buka halaman web player
-                                 ──▶ langsung muter lagunya
+                                 browser yang lagi kebuka
+                                 ──▶ <audio src="/api/stream/<id>">
+                                     (server proxy audio via yt-dlp)
 ```
+
+## Catatan soal "bisa background"
+
+- Browser tetap punya kuasa penuh buat suspend tab kalau device lagi
+  low-power/battery-saver ekstrem — nggak ada API web yang bisa 100% jamin
+  ini di semua kondisi. Tapi kombinasi `<audio>` tag + Media Session +
+  Wake Lock ini adalah cara paling maksimal yang bisa dilakukan lewat web
+  biasa (tanpa jadi native app).
+- Sekali ketuk "Aktifkan Audio" tetap wajib (aturan browser), setelah itu
+  play berikutnya dari WA udah otomatis nyala tanpa perlu buka tab lagi.
+- Kalau HP di-lock, biasanya kontrol play/pause/judul lagu bakal muncul di
+  lock screen / notification shade — itu dari Media Session API.
 
 ## 1. Jalanin music-server-nya
 
@@ -64,6 +84,10 @@ ada browser yang buka halaman player-nya, bot bakal ngasih tau juga.
   bakal ikut muter lagu yang sama. Cocok buat 1 pemakaian pribadi/1 device.
   Kalau nanti butuh multi-room (tiap orang/device punya sesi sendiri),
   tinggal bilang, bisa ditambahin sistem kode room.
-- Sumber lagu dari pencarian YouTube (`yt-search`), diputer lewat YouTube
-  IFrame Player API langsung di browser — jadi nggak perlu simpen/convert
-  file audio sama sekali.
+- Sumber lagu dari pencarian YouTube (`yt-search`), audio-nya di-stream
+  langsung (bukan didownload/disimpen ke disk) lewat `yt-dlp` yang jalan
+  di server pas ada request — jadi nggak ada file yang numpuk.
+- Server butuh binary `yt-dlp` bisa dieksekusi (paket `yt-dlp-exec` bakal
+  download binary-nya otomatis pas `npm install`). Kalau deploy ke Railway,
+  ini biasanya jalan tanpa setup tambahan; kalau ada masalah permission,
+  cek log deploy-nya.
