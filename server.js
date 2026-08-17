@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws'
 import yts from 'yt-search'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import ytdlp from 'yt-dlp-exec'
+import { Innertube } from 'youtubei.js'
 import https from 'https'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -14,25 +14,31 @@ const app = express()
 app.use(cors())
 app.use(express.static(path.join(__dirname, 'public')))
 
+// youtubei.js: pure JS, ngobrol langsung ke internal API YouTube (kayak yang
+// dipakai app resminya) — gak butuh binary/Python eksternal, jadi aman
+// dijalanin di platform kayak Railway yang cuma nyediain Node runtime.
+let ytClient = null
+async function getYtClient() {
+  if (!ytClient) ytClient = await Innertube.create({ generate_session_locally: true })
+  return ytClient
+}
+
 // Cache URL stream audio per videoId biar gak nge-resolve ulang tiap request
-// (URL dari YouTube ada masa berlakunya ~6 jam, jadi kita simpen sebentar aja).
+// (URL dari YouTube ada masa berlakunya beberapa jam, jadi kita simpen sebentar aja).
 const streamCache = new Map() // videoId -> { url, expiresAt }
-const STREAM_CACHE_MS = 4 * 60 * 60 * 1000 // 4 jam, aman di bawah masa berlaku asli
+const STREAM_CACHE_MS = 3 * 60 * 60 * 1000 // 3 jam, aman di bawah masa berlaku asli
 
 async function resolveAudioUrl(videoId) {
   const cached = streamCache.get(videoId)
   if (cached && cached.expiresAt > Date.now()) return cached.url
 
-  const info = await ytdlp(`https://www.youtube.com/watch?v=${videoId}`, {
-    dumpSingleJson: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-    format: 'bestaudio/best',
-    noPlaylist: true
-  })
+  const yt = await getYtClient()
+  const info = await yt.getBasicInfo(videoId)
+  const format = info.chooseFormat({ type: 'audio', quality: 'best' })
+  if (!format) throw new Error('Gagal ambil format audio dari YouTube')
 
-  const url = info.url || info.formats?.find(f => f.acodec !== 'none' && f.vcodec === 'none')?.url
-  if (!url) throw new Error('Gagal ambil URL audio dari yt-dlp')
+  const url = format.decipher(yt.session.player)
+  if (!url) throw new Error('Gagal decipher URL audio')
 
   streamCache.set(videoId, { url, expiresAt: Date.now() + STREAM_CACHE_MS })
   return url

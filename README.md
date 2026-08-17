@@ -4,7 +4,9 @@ Bot WA cuma jadi remote. Musiknya beneran keluar dari browser yang lagi
 kebuka halaman web player, bukan dikirim sebagai file audio ke WhatsApp.
 
 Server yang nyari lagu di YouTube (`yt-search`) lalu ekstrak URL audio
-mentahnya (`yt-dlp`) dan di-proxy lewat endpoint sendiri ke tag `<audio>`
+mentahnya (`youtubei.js` — pure JS, ngobrol langsung ke internal API
+YouTube, gak butuh binary/Python eksternal) dan di-proxy lewat endpoint
+sendiri ke tag `<audio>`
 biasa di browser — bukan iframe video YouTube. Ini penting: tag `<audio>`
 jauh lebih toleran dijalankan browser mobile pas tab di-minimize atau layar
 dikunci, apalagi dikombinasi Media Session API (bikin browser anggap ini
@@ -24,7 +26,7 @@ plugin-playonweb.js  ──HTTP GET──▶  server.js (music-server)
                                         ▼
                                  browser yang lagi kebuka
                                  ──▶ <audio src="/api/stream/<id>">
-                                     (server proxy audio via yt-dlp)
+                                     (server proxy audio via youtubei.js)
 ```
 
 ## Catatan soal "bisa background"
@@ -85,9 +87,8 @@ ada browser yang buka halaman player-nya, bot bakal ngasih tau juga.
   Kalau nanti butuh multi-room (tiap orang/device punya sesi sendiri),
   tinggal bilang, bisa ditambahin sistem kode room.
 - Sumber lagu dari pencarian YouTube (`yt-search`), audio-nya di-stream
-  langsung (bukan didownload/disimpen ke disk) lewat `yt-dlp` yang jalan
-  di server pas ada request — jadi nggak ada file yang numpuk.
-- Server butuh binary `yt-dlp` bisa dieksekusi (paket `yt-dlp-exec` bakal
-  download binary-nya otomatis pas `npm install`). Kalau deploy ke Railway,
-  ini biasanya jalan tanpa setup tambahan; kalau ada masalah permission,
-  cek log deploy-nya.
+  langsung (bukan didownload/disimpen ke disk) lewat `youtubei.js` yang
+  jalan di server pas ada request — jadi nggak ada file yang numpuk.
+- `youtubei.js` murni JavaScript (bukan wrapper ke binary Python/CLI kayak
+  yt-dlp), jadi langsung jalan di Railway/Replit/Netlify Functions tanpa
+  perlu setup runtime tambahan.
