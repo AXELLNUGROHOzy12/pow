@@ -33,15 +33,31 @@ async function resolveAudioUrl(videoId) {
   if (cached && cached.expiresAt > Date.now()) return cached.url
 
   const yt = await getYtClient()
-  const info = await yt.getBasicInfo(videoId)
-  const format = info.chooseFormat({ type: 'audio', quality: 'best' })
-  if (!format) throw new Error('Gagal ambil format audio dari YouTube')
 
-  const url = format.decipher(yt.session.player)
-  if (!url) throw new Error('Gagal decipher URL audio')
+  // Coba beberapa "client" YouTube secara berurutan. YouTube kadang nolak
+  // (400) atau ngeblok salah satu client type, jadi kita fallback biar gak
+  // gampang total gagal cuma gara-gara satu client lagi bermasalah.
+  const clientsToTry = ['ANDROID', 'IOS', 'WEB']
+  let lastErr = null
 
-  streamCache.set(videoId, { url, expiresAt: Date.now() + STREAM_CACHE_MS })
-  return url
+  for (const client of clientsToTry) {
+    try {
+      const info = await yt.getBasicInfo(videoId, client)
+      const format = info.chooseFormat({ type: 'audio', quality: 'best' })
+      if (!format) continue
+
+      const url = format.decipher ? (format.url || format.decipher(yt.session.player)) : format.url
+      if (!url) continue
+
+      streamCache.set(videoId, { url, expiresAt: Date.now() + STREAM_CACHE_MS })
+      return url
+    } catch (err) {
+      lastErr = err
+      console.warn(`[playonweb] client ${client} gagal:`, err.message)
+    }
+  }
+
+  throw lastErr || new Error('Gagal ambil URL audio dari semua client YouTube')
 }
 
 const server = http.createServer(app)
